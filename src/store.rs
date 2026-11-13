@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS analytics_sessions (
   install TEXT NOT NULL,
   platform TEXT,
   build TEXT,
+  user TEXT,
   started_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL
 );
@@ -17,15 +18,15 @@ CREATE TABLE IF NOT EXISTS analytics_events (
   id INTEGER PRIMARY KEY,
   at INTEGER NOT NULL,
   name TEXT NOT NULL,
-  label TEXT,
-  source TEXT NOT NULL,
+  user TEXT,
   session TEXT,
   install TEXT,
-  user TEXT,
-  props TEXT
+  source TEXT NOT NULL,
+  payload TEXT
 );
 CREATE INDEX IF NOT EXISTS analytics_events_at ON analytics_events(at);
 CREATE INDEX IF NOT EXISTS analytics_events_name ON analytics_events(name, at);
+CREATE INDEX IF NOT EXISTS analytics_events_user ON analytics_events(user, at);
 ";
 
 /// A session never stretches past this, so a device left open on a table does not count for days.
@@ -59,14 +60,14 @@ impl Store {
             match started {
                 None => {
                     tx.execute(
-                        "INSERT INTO analytics_sessions (id, install, platform, build, started_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        params![session, install, batch.platform, batch.build, now, now],
+                        "INSERT INTO analytics_sessions (id, install, platform, build, user, started_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        params![session, install, batch.platform, batch.build, batch.user, now, now],
                     )?;
                 }
                 Some(started) => {
                     tx.execute(
-                        "UPDATE analytics_sessions SET last_seen_at = MAX(last_seen_at, ?) WHERE id = ?",
-                        params![now.min(started + LONGEST_SESSION), session],
+                        "UPDATE analytics_sessions SET last_seen_at = MAX(last_seen_at, ?), user = COALESCE(?, user) WHERE id = ?",
+                        params![now.min(started + LONGEST_SESSION), batch.user, session],
                     )?;
                 }
             }
@@ -77,18 +78,17 @@ impl Store {
         };
         {
             let mut insert = tx.prepare_cached(
-                "INSERT INTO analytics_events (at, name, label, source, session, install, user, props) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO analytics_events (at, name, user, session, install, source, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
             )?;
             for event in &batch.events {
                 insert.execute(params![
                     now - event.ago,
                     event.name,
-                    event.label,
-                    source,
+                    event.user.as_ref().or(batch.user.as_ref()),
                     batch.session,
                     batch.install,
-                    event.user,
-                    event.props.as_ref().map(|p| p.to_string()),
+                    source,
+                    event.payload.as_ref().map(|p| p.to_string()),
                 ])?;
             }
         }

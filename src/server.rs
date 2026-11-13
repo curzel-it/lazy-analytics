@@ -3,7 +3,7 @@ use crate::dashboard::DashboardConfig;
 use crate::events::{parse, Source};
 use crate::http::{read_request, write_response, Request, Response};
 use crate::limiter::Limiter;
-use crate::report::{report, Window};
+use crate::report::{recent, report, Window};
 use crate::store::Store;
 use serde_json::json;
 use std::net::TcpListener;
@@ -21,6 +21,7 @@ fn now() -> i64 {
 /// - `GET /` the dashboard page, which holds no data itself
 /// - `POST /api/events` a batch of events: anonymous from anyone, naming users only from this machine
 /// - `GET /api/report?days=30&tz=60` the dashboard's numbers, for admins only
+/// - `GET /api/events?name=&before=&limit=100` the latest events with their payloads, for admins only
 pub struct Server {
     store: Store,
     admin: Box<dyn AdminCheck>,
@@ -87,6 +88,21 @@ impl Server {
                     }
                 }
             }
+            ("GET", "/api/events") => {
+                if !self.admin.is_admin(request) {
+                    return Response::json(403, &json!({ "error": "notAdmin" }));
+                }
+                let name = request.query.get("name").map(String::as_str).filter(|n| !n.is_empty());
+                let before = request.query.get("before").and_then(|v| v.parse().ok()).unwrap_or(i64::MAX);
+                let limit = request.query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 500);
+                match recent(&self.store, name, before, limit) {
+                    Ok(body) => Response::json(200, &body),
+                    Err(error) => {
+                        eprintln!("[analytics] {error}");
+                        Response::json(500, &json!({ "error": "serverError" }))
+                    }
+                }
+            }
             (_, "/" | "/api/events" | "/api/report") => Response::json(405, &json!({ "error": "methodNotAllowed" })),
             _ => Response::json(404, &json!({ "error": "notFound" })),
         }
@@ -143,7 +159,7 @@ mod tests {
     #[test]
     fn reports_only_to_admins_and_trusts_only_local_users() {
         let server = Server::new(crate::store::open(":memory:").unwrap(), |r: &Request| r.header("authorization") == Some("Bearer ok"));
-        let remote = request("POST", "/api/events", r#"{"install":"i","session":"s","events":[{"name":"race","label":"cup"}]}"#, [8, 8, 8, 8]);
+        let remote = request("POST", "/api/events", r#"{"install":"i","session":"s","events":[{"name":"race","payload":{"league":"cup"}}]}"#, [8, 8, 8, 8]);
         assert_eq!(server.handle(&remote).status, 200);
         let local = request("POST", "/api/events", r#"{"events":[{"name":"login","user":"3"}]}"#, [127, 0, 0, 1]);
         assert_eq!(server.handle(&local).status, 200);
@@ -153,6 +169,11 @@ mod tests {
         let answer: serde_json::Value = serde_json::from_slice(&server.handle(&ask).body).unwrap();
         assert_eq!(answer["client"]["race"], 1);
         assert_eq!(answer["server"]["login"], 1);
+        let mut latest = request("GET", "/api/events", "", [8, 8, 8, 8]);
+        assert_eq!(server.handle(&latest).status, 403);
+        latest.headers.insert("authorization".into(), "Bearer ok".into());
+        let events: serde_json::Value = serde_json::from_slice(&server.handle(&latest).body).unwrap();
+        assert_eq!(events.as_array().unwrap().len(), 2);
         assert!(server.handle(&request("GET", "/", "", [8, 8, 8, 8])).body.len() > 1000);
     }
 }

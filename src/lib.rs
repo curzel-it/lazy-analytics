@@ -20,6 +20,6 @@ pub use admin::{AdminCheck, Forward};
 pub use dashboard::DashboardConfig;
 pub use events::{parse, Batch, Event, Source};
 pub use http::{Request, Response};
-pub use report::{report, Window};
+pub use report::{recent, report, Window};
 pub use server::Server;
 pub use store::{open, Store};
