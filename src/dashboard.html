@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Analytics</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f3f2ee;
+    --surface-1: #fcfcfb;
+    --hairline: #e3e1da;
+    --grid: #ecebe6;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7d7c77;
+    --series-1: #2a78d6;
+    --series-1-hover: #5598e7;
+    --critical: #c4302f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface-0: #111110;
+      --surface-1: #1a1a19;
+      --hairline: #2f2e2b;
+      --grid: #262624;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8c8b84;
+      --series-1: #3987e5;
+      --series-1-hover: #6da7ec;
+      --critical: #e66767;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 20px 24px 8px; }
+  h1 { font-size: 20px; margin: 0 auto 0 0; }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--text-secondary); }
+  main { padding: 8px 24px 40px; display: grid; gap: 16px; }
+  .ranges { display: flex; gap: 4px; }
+  button, input { font: inherit; color: inherit; }
+  button { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button[aria-pressed="true"] { border-color: var(--text-primary); font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .tile, .card { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 12px; padding: 14px 16px; }
+  .tile .label { color: var(--text-secondary); font-size: 12px; }
+  .tile .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  svg text { fill: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .bar { fill: var(--series-1); }
+  .hit:hover + .bar, .hit:focus + .bar { fill: var(--series-1-hover); }
+  .hit { fill: transparent; outline: none; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--hairline); stroke-width: 1; }
+  .rows { display: grid; gap: 6px; }
+  .row { display: grid; grid-template-columns: minmax(80px, 34%) 1fr auto; gap: 10px; align-items: center; }
+  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+  .row .track { height: 10px; }
+  .row .fill { height: 100%; background: var(--series-1); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .row .count { font-variant-numeric: tabular-nums; text-align: right; min-width: 3ch; }
+  .row .count small { color: var(--text-muted); }
+  .empty { color: var(--text-muted); }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
+  details summary { cursor: pointer; color: var(--text-secondary); }
+  .scroll { overflow-x: auto; margin-top: 10px; }
+  #tip { position: fixed; pointer-events: none; background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 10px; box-shadow: 0 4px 16px #0002; display: none; z-index: 2; }
+  #tip strong { display: block; font-size: 15px; }
+  #tip span { color: var(--text-secondary); font-size: 12px; }
+  .gate { max-width: 420px; margin: 12vh auto; }
+  .gate form { display: flex; gap: 8px; margin-top: 12px; }
+  .gate input { flex: 1; padding: 6px 10px; border: 1px solid var(--hairline); border-radius: 8px; background: var(--surface-1); }
+  .error { color: var(--critical); }
+  .loading main { opacity: .5; transition: opacity .2s; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Analytics</h1>
+  <div class="ranges" id="ranges"></div>
+  <button id="refresh" type="button">Refresh</button>
+</header>
+<main id="main"></main>
+<div id="tip" role="tooltip"></div>
+<script>
+const config = /*CONFIG*/{};
+const ranges = [7, 30, 90, 365];
+const tokenSession = "lazy-analytics-token";
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
+};
+const svgEl = (tag, attrs = {}) => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+};
+const number = (n) => Number(n ?? 0).toLocaleString();
+const duration = (s) => {
+  s = Math.round(s ?? 0);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+};
+const pretty = (name) => name.replace(/[_.-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+const shortDay = (day) => new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+let days = Number(new URLSearchParams(location.search).get("days")) || 30;
+
+function token() {
+  const fromHash = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (fromHash) {
+    sessionStorage.setItem(tokenSession, fromHash);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  const kept = sessionStorage.getItem(tokenSession);
+  if (kept) return kept;
+  if (!config.tokenKey) return null;
+  const raw = localStorage.getItem(config.tokenKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "string" ? parsed : parsed?.token ?? null;
+  } catch {
+    return raw;
+  }
+}
+
+function gate(message) {
+  $("ranges").hidden = $("refresh").hidden = true;
+  const input = el("input", { type: "password", placeholder: "Session token", autocomplete: "off" });
+  const form = el("form", {}, input, el("button", { type: "submit", textContent: "Open" }));
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    sessionStorage.setItem(tokenSession, input.value.trim());
+    load();
+  });
+  $("main").replaceChildren(el("div", { className: "gate card" }, el("h2", { textContent: "Admins only" }), message ? el("p", { className: "error", textContent: message }) : null, el("p", { textContent: config.tokenKey ? "Log in as an admin on this site first, or paste an admin's session token." : "Paste an admin's session token." }), form));
+}
+
+const tip = $("tip");
+function showTip(event, value, label) {
+  tip.replaceChildren(el("strong", { textContent: value }), el("span", { textContent: label }));
+  tip.style.display = "block";
+  const box = event.target.getBoundingClientRect?.() ?? { left: 0, top: 0, width: 0 };
+  const x = event.clientX ?? box.left + box.width / 2;
+  const y = event.clientY ?? box.top;
+  tip.style.left = `${Math.min(innerWidth - tip.offsetWidth - 8, x + 12)}px`;
+  tip.style.top = `${Math.max(8, y - tip.offsetHeight - 12)}px`;
+}
+const hideTip = () => (tip.style.display = "none");
+
+function niceMax(max) {
+  if (max <= 4) return Math.max(1, Math.ceil(max));
+  const step = 10 ** Math.floor(Math.log10(max));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * step >= max) return m * step;
+  return max;
+}
+
+/** A one-series column chart over `points` ({label, value}); `format` writes a value. */
+function columns(points, format = number, { labelEvery } = {}) {
+  const width = 600, height = 180, left = 34, bottom = 20, top = 8;
+  const max = niceMax(Math.max(0, ...points.map((p) => p.value)));
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const plotW = width - left, plotH = height - top - bottom;
+  for (const f of [0, 0.5, 1]) {
+    const y = top + plotH * (1 - f);
+    svg.append(svgEl("line", { x1: left, x2: width, y1: y, y2: y, class: f ? "gridline" : "axis" }));
+    const t = svgEl("text", { x: left - 6, y: y + 3, "text-anchor": "end" });
+    t.textContent = format === number ? number(max * f) : format(max * f);
+    svg.append(t);
+  }
+  const slot = plotW / Math.max(1, points.length);
+  const gap = Math.min(2, slot * 0.25);
+  const every = labelEvery ?? Math.ceil(points.length / 7);
+  points.forEach((p, i) => {
+    const x = left + i * slot;
+    const h = max ? (p.value / max) * plotH : 0;
+    const hit = svgEl("rect", { x, y: top, width: slot, height: plotH, class: "hit", tabindex: 0 });
+    const text = format(p.value);
+    hit.addEventListener("pointermove", (e) => showTip(e, text, p.label));
+    hit.addEventListener("focus", (e) => showTip(e, text, p.label));
+    hit.addEventListener("pointerleave", hideTip);
+    hit.addEventListener("blur", hideTip);
+    svg.append(hit);
+    const w = Math.max(1, slot - gap), y = top + plotH - h, r = Math.min(4, w / 2, h);
+    svg.append(svgEl("path", { class: "bar", d: h ? `M${x + gap / 2},${top + plotH}V${y + r}q0,-${r} ${r},-${r}h${w - 2 * r}q${r},0 ${r},${r}V${top + plotH}Z` : "" }));
+    if (i % every === 0 || points.length <= 8) {
+      const t = svgEl("text", { x: x + slot / 2, y: height - 4, "text-anchor": "middle" });
+      t.textContent = p.label;
+      svg.append(t);
+    }
+  });
+  return svg;
+}
+
+function card(title, ...content) {
+  return el("section", { className: "card" }, el("h2", { textContent: title }), ...content);
+}
+
+function dailyCard(title, daily, value, format = number, { summed = true } = {}) {
+  const total = daily.reduce((s, d) => s + value(d), 0);
+  return card(summed ? `${title} · ${format === number ? number(total) : format(total)}` : title, columns(daily.map((d) => ({ label: shortDay(d.day), value: value(d) })), format));
+}
+
+/** Horizontal bars for a ranked list of {name, count, installs?}. */
+function ranking(list) {
+  if (!list.length) return el("p", { className: "empty", textContent: "Nothing yet." });
+  const max = Math.max(...list.map((r) => r.count));
+  return el(
+    "div",
+    { className: "rows" },
+    ...list.map((r) => {
+      const fill = el("div", { className: "fill" });
+      fill.style.width = `${(r.count / max) * 100}%`;
+      const count = el("div", { className: "count", textContent: number(r.count) });
+      if (r.installs) count.append(" ", el("small", { textContent: `· ${number(r.installs)} installs` }));
+      return el("div", { className: "row" }, el("div", { className: "name", textContent: r.name, title: r.name }), el("div", { className: "track" }, fill), count);
+    }),
+  );
+}
+
+function dailyTable(report, names) {
+  const head = el("tr", {}, ...["Day", "Installs", "Sessions", "Play time", ...names.map(([s, n]) => pretty(n) + (s === "server" ? " (server)" : ""))].map((h) => el("th", { textContent: h })));
+  const rows = [...report.daily].reverse().map((d) => el("tr", {}, el("td", { textContent: d.day }), el("td", { textContent: number(d.installs) }), el("td", { textContent: number(d.sessions) }), el("td", { textContent: duration(d.playSeconds) }), ...names.map(([s, n]) => el("td", { textContent: number(d[s][n]) }))));
+  return el("details", {}, el("summary", { textContent: "Daily table" }), el("div", { className: "scroll" }, el("table", {}, el("thead", {}, head), el("tbody", {}, ...rows))));
+}
+
+function render(report) {
+  const { totals, daily } = report;
+  const server = report.server, client = report.client;
+  const tiles = [
+    ["Active installs", number(totals.installs)],
+    ["New installs", number(totals.newInstalls)],
+    ["Sessions", number(totals.sessions)],
+    ["Median session", duration(totals.medianSessionSeconds)],
+    ["Average session", duration(totals.averageSessionSeconds)],
+    ["Play time", duration(totals.playSeconds)],
+    ...Object.entries(server).map(([name, n]) => [pretty(name), number(n)]),
+  ];
+  const names = [...Object.keys(server).map((n) => ["server", n]), ...Object.keys(client).map((n) => ["client", n])];
+  const eventCharts = names.map(([source, name]) => dailyCard(pretty(name) + (source === "server" && name in client ? " (server)" : ""), daily, (d) => d[source][name] ?? 0));
+  const labelCards = Object.entries(report.labels).map(([name, list]) => card(`Top ${pretty(name).toLowerCase()} labels`, ranking(list.map((r) => ({ name: r.label, count: r.count, installs: r.installs })))));
+  $("main").replaceChildren(
+    el("div", { className: "tiles" }, ...tiles.map(([label, value]) => el("div", { className: "tile" }, el("div", { className: "label", textContent: label }), el("div", { className: "value", textContent: value })))),
+    el(
+      "div",
+      { className: "grid" },
+      dailyCard("Active installs per day", daily, (d) => d.installs, number, { summed: false }),
+      dailyCard("Sessions per day", daily, (d) => d.sessions),
+      dailyCard("Play time per day", daily, (d) => d.playSeconds, duration),
+      card("Session length", columns(report.durations.map((b) => ({ label: b.bucket, value: b.sessions })))),
+      ...eventCharts,
+      ...labelCards,
+      card("Platforms", ranking(report.platforms.map((p) => ({ name: p.key, count: p.sessions, installs: p.installs })))),
+      card("Builds", ranking(report.builds.map((p) => ({ name: p.key, count: p.sessions, installs: p.installs })))),
+    ),
+    card("All days", dailyTable(report, names)),
+  );
+}
+
+async function load() {
+  $("ranges").hidden = $("refresh").hidden = false;
+  const auth = token();
+  if (!auth) return gate();
+  document.body.classList.add("loading");
+  try {
+    const response = await fetch(`api/report?days=${days}&tz=${-new Date().getTimezoneOffset()}`, { headers: { Authorization: `Bearer ${auth}` } });
+    if (response.status === 403) {
+      sessionStorage.removeItem(tokenSession);
+      return gate("That session is not an admin's.");
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    render(await response.json());
+  } catch (error) {
+    $("main").replaceChildren(el("p", { className: "error", textContent: `Could not load the report: ${error.message}` }));
+  } finally {
+    document.body.classList.remove("loading");
+  }
+}
+
+$("title").textContent = config.title || "Analytics";
+for (const n of ranges) {
+  const button = el("button", { type: "button", textContent: n === 365 ? "1 year" : `${n} days` });
+  button.setAttribute("aria-pressed", String(n === days));
+  button.addEventListener("click", () => {
+    days = n;
+    for (const b of $("ranges").children) b.setAttribute("aria-pressed", String(b === button));
+    history.replaceState(null, "", `?days=${n}`);
+    load();
+  });
+  $("ranges").append(button);
+}
+$("refresh").addEventListener("click", load);
+addEventListener("hashchange", load);
+addEventListener("scroll", hideTip, { passive: true });
+load();
+</script>
+</body>
+</html>
